@@ -1,0 +1,212 @@
+enum State { S_GREEN, S_YELLOW, S_RED, S_RED_PED, S_WARNING, S_NIGHT };
+State currentState = S_GREEN;
+
+const int PIN_RED = 13;
+const int PIN_YELLOW = 12;
+const int PIN_GREEN = 11;
+const int PIN_BUTTON = 2;
+
+unsigned long stateStartTime = 0;
+unsigned long stateDuration = 10000;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
+unsigned long buttonPressTime = 0;
+const unsigned long longPressDelay = 2000;
+
+bool pedestrianRequested = false;
+bool pedFlagActive = false;
+bool emergencyFlag = false;
+bool nightModeFlag = false;
+bool lastButtonState = HIGH;
+bool buttonState = HIGH;
+
+void setup() {
+  pinMode(PIN_RED, OUTPUT);
+  pinMode(PIN_YELLOW, OUTPUT);
+  pinMode(PIN_GREEN, OUTPUT);
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
+  
+  Serial.begin(9600);
+  Serial.println("Traffic Light FSM Started");
+  
+  goToState(S_GREEN, 10000);
+}
+
+void goToState(State newState, unsigned long duration) {
+  currentState = newState;
+  stateStartTime = millis();
+  stateDuration = duration;
+  
+
+  switch (newState) {
+    case S_GREEN:
+      digitalWrite(PIN_RED, LOW);
+      digitalWrite(PIN_YELLOW, LOW);
+      digitalWrite(PIN_GREEN, HIGH);
+      Serial.println("State: GREEN");
+      break;
+    case S_YELLOW:
+      digitalWrite(PIN_RED, LOW);
+      digitalWrite(PIN_YELLOW, HIGH);
+      digitalWrite(PIN_GREEN, LOW);
+      Serial.println("State: YELLOW");
+      break;
+    case S_RED:
+      digitalWrite(PIN_RED, HIGH);
+      digitalWrite(PIN_YELLOW, LOW);
+      digitalWrite(PIN_GREEN, LOW);
+      Serial.println("State: RED");
+      break;
+    case S_RED_PED:
+      digitalWrite(PIN_RED, HIGH);
+      digitalWrite(PIN_YELLOW, LOW);
+      digitalWrite(PIN_GREEN, LOW);
+      Serial.println("State: RED_PED (Extended for pedestrians)");
+      break;
+    case S_WARNING:
+      digitalWrite(PIN_RED, LOW);
+      digitalWrite(PIN_GREEN, LOW);
+
+      Serial.println("State: WARNING (Emergency)");
+      break;
+    case S_NIGHT:
+      digitalWrite(PIN_RED, LOW);
+      digitalWrite(PIN_GREEN, LOW);
+
+      Serial.println("State: NIGHT");
+      break;
+  }
+}
+
+void updateInputs(unsigned long currentMillis) {
+
+  bool reading = digitalRead(PIN_BUTTON);
+  
+  if (reading != lastButtonState) {
+    lastDebounceTime = currentMillis;
+  }
+  
+  if ((currentMillis - lastDebounceTime) > debounceDelay) {
+    if (reading != buttonState) {
+      buttonState = reading;
+      
+      if (buttonState == LOW) { 
+        // Кнопка нажата
+        buttonPressTime = currentMillis;
+        Serial.println("Button pressed");
+      } else { 
+
+        unsigned long pressDuration = currentMillis - buttonPressTime;
+        
+        if (pressDuration < 1000) {
+
+          if (!emergencyFlag && !nightModeFlag) {
+            pedestrianRequested = true;
+            Serial.println("Short press - pedestrian request registered");
+          }
+        } else if (pressDuration >= 2000) {
+
+          nightModeFlag = !nightModeFlag;
+          if (nightModeFlag) {
+            Serial.println("Long press - Night mode ACTIVATED");
+          } else {
+            Serial.println("Long press - Night mode DEACTIVATED");
+          }
+        }
+      }
+    }
+  }
+  
+  lastButtonState = reading;
+  
+  if (Serial.available()) {
+    char command = Serial.read();
+    if (command == 'e' || command == 'у') { // английская и русская e
+      emergencyFlag = !emergencyFlag;
+      if (emergencyFlag) {
+        Serial.println("Emergency mode ACTIVATED via Serial");
+      } else {
+        Serial.println("Emergency mode DEACTIVATED via Serial");
+      }
+    }
+  }
+}
+void handleBlinking(unsigned long currentMillis) {
+  if (currentState == S_WARNING || currentState == S_NIGHT) {
+
+    bool ledState = (currentMillis / 500) % 2;
+    digitalWrite(PIN_YELLOW, ledState);
+  }
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+  
+  updateInputs(currentMillis);
+  handleBlinking(currentMillis);
+
+  if (emergencyFlag && currentState != S_WARNING) {
+    goToState(S_WARNING, 500);
+    return;
+  }
+  
+  if (nightModeFlag && !emergencyFlag && currentState != S_NIGHT) {
+    goToState(S_NIGHT, 500);
+    return;
+  }
+  
+
+  if (!emergencyFlag && !nightModeFlag && (currentState == S_WARNING || currentState == S_NIGHT)) {
+    goToState(S_GREEN, 10000);
+    return;
+  }
+
+
+  switch (currentState) {
+    case S_GREEN:
+      
+      if (pedestrianRequested) {
+        pedFlagActive = true;
+        pedestrianRequested = false;
+        Serial.println("Pedestrian will cross after green");
+      }
+      
+  
+      if (currentMillis - stateStartTime >= stateDuration) {
+        goToState(S_YELLOW, 3000);
+      }
+      break;
+
+    case S_YELLOW:
+      if (currentMillis - stateStartTime >= stateDuration) {
+        if (pedFlagActive) {
+         
+          goToState(S_RED_PED, 15000);
+          pedFlagActive = false;
+          Serial.println("Extended red for pedestrians");
+        } else {
+     
+          goToState(S_RED, 10000);
+        }
+      }
+      break;
+
+    case S_RED:
+      if (currentMillis - stateStartTime >= stateDuration) {
+        goToState(S_GREEN, 10000);
+      }
+      break;
+
+    case S_RED_PED:
+      if (currentMillis - stateStartTime >= stateDuration) {
+        goToState(S_GREEN, 10000);
+        Serial.println("Pedestrian crossing completed");
+      }
+      break;
+
+    case S_WARNING:
+    case S_NIGHT:
+      
+      break;
+  }
+}
